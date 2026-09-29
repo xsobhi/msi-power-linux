@@ -3,11 +3,9 @@
 #   Battery: MSI eco + Super Battery + power-saver
 #   Charger: MSI comfort (balanced) + balanced
 # Skipped while a manual preset is active (/run/msi-power-manual, cleared on reboot).
-if [ -f /run/msi-power-manual ]; then
-    logger -t msi-power-auto "manual preset $(cat /run/msi-power-manual) active, not changing"
-    exit 0
-fi
+# --notify: also show a desktop notification (used by the udev rule on plug/unplug).
 EC=/sys/devices/platform/msi-ec
+NOTIFY=0; [ "$1" = --notify ] && NOTIFY=1
 
 ac_online() {
     for s in /sys/class/power_supply/*; do
@@ -16,7 +14,25 @@ ac_online() {
     echo 1
 }
 
+# Show a notification in every logged-in user's desktop session (we run as root from udev).
+notify() {
+    [ "$NOTIFY" = 1 ] && command -v notify-send >/dev/null || return 0
+    for uid in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $2}' | sort -u); do
+        [ -S "/run/user/$uid/bus" ] || continue
+        runuser -u "$(id -nu "$uid")" -- env DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+            notify-send -a "Power Mode" -i "$1" "$2" "$3" 2>/dev/null &
+    done
+}
+
 AC=$(ac_online)
+if [ -f /run/msi-power-manual ]; then
+    manual=$(cat /run/msi-power-manual)
+    [ "$AC" = 0 ] && what="Charger unplugged" || what="Charger connected"
+    notify battery "$what" "Manual mode \"$manual\" kept — pick Automatic in Power Mode to follow the charger."
+    logger -t msi-power-auto "manual preset $manual active, not changing"
+    exit 0
+fi
+
 if [ "$AC" = 0 ]; then shift=eco; sb=on; profile=power-saver
 else shift=comfort; sb=off; profile=balanced; fi
 if [ -d "$EC" ]; then
@@ -27,3 +43,9 @@ if [ -d "$EC" ]; then
 fi
 /usr/bin/powerprofilesctl set "$profile" 2>/dev/null
 logger -t msi-power-auto "AC=$AC -> shift=$shift super_battery=$sb profile=$profile"
+
+if [ "$AC" = 0 ]; then
+    notify battery "On battery — Super Battery" "MSI Eco + Super Battery, power-saver profile"
+else
+    notify ac-adapter "Charger connected — Balanced" "MSI Comfort, balanced profile"
+fi

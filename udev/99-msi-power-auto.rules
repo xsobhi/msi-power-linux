@@ -1,2 +1,2 @@
 # Re-apply MSI EC mode + power profile whenever the charger is plugged/unplugged
-SUBSYSTEM=="power_supply", ATTR{type}=="Mains", RUN+="/usr/local/bin/msi-power-auto"
+SUBSYSTEM=="power_supply", ATTR{type}=="Mains", RUN+="/usr/local/bin/msi-power-auto --notify"

@@ -24,6 +24,9 @@ Tested on an **MSI Katana 15 B13VFK** (EC firmware `1585EMS1.115`), Linux Mint 2
 | Super Battery | eco | on | auto | off | power-saver |
 | **Automatic** (default) | comfort / eco | off / on | auto | off | balanced / power-saver |
 
+When the charger is plugged in or unplugged you get a desktop notification saying which mode it switched to
+(or that your manual mode was kept).
+
 A manual preset sticks until you pick **Automatic** or reboot — plugging/unplugging the charger won't
 override it. After a reboot it always starts in Automatic, so you can't get stuck in a loud/hot mode.
 
@@ -62,7 +65,7 @@ Command line: `sudo msi-power-set extreme|extremeboost|balanced|silent|superbatt
 | `/usr/local/bin/msi-power-auto` | applies the charger/battery mode (skipped while a manual preset is active) |
 | `/usr/local/bin/msi-power-set` | applies a named preset; only accepts the fixed names above |
 | `/usr/local/bin/power-mode` | zenity picker + notifications |
-| `/etc/udev/rules.d/99-msi-power-auto.rules` | re-applies on charger plug/unplug (any `Mains` power supply) |
+| `/etc/udev/rules.d/99-msi-power-auto.rules` | re-applies on charger plug/unplug (any `Mains` power supply) and notifies logged-in desktop sessions |
 | `msi-power-auto.service` | applies at boot |
 | `/usr/lib/systemd/system-sleep/msi-power-auto` | re-applies after resume |
 | `/etc/sudoers.d/msi-power` | lets *your* user run `msi-power-set` (and nothing else) without a password |
