@@ -1,0 +1,4 @@
+#!/bin/sh
+# Re-apply after resume (EC may reset its mode across sleep)
+[ "$1" = post ] && /usr/local/bin/msi-power-auto
+exit 0

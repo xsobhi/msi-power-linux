@@ -1,0 +1,22 @@
+#!/bin/sh
+# Usage: msi-power-set extreme|extremeboost|balanced|silent|superbattery|auto
+# Manual presets stick (until reboot or "auto"); "auto" returns to AC/battery switching.
+EC=/sys/devices/platform/msi-ec
+FLAG=/run/msi-power-manual
+case "$1" in
+    extreme)      shift=turbo;   sb=off; fan=auto;   profile=performance ;;
+    extremeboost) shift=turbo;   sb=off; fan=auto;   profile=performance; boost=on ;;
+    balanced)     shift=comfort; sb=off; fan=auto;   profile=balanced ;;
+    silent)       shift=eco;     sb=off; fan=silent; profile=balanced ;;
+    superbattery) shift=eco;     sb=on;  fan=auto;   profile=power-saver ;;
+    auto)         rm -f "$FLAG"; exec /usr/local/bin/msi-power-auto ;;
+    *) echo "usage: $0 extreme|extremeboost|balanced|silent|superbattery|auto" >&2; exit 2 ;;
+esac
+[ -d "$EC" ] || { echo "msi-ec driver not loaded" >&2; exit 1; }
+echo "$shift" > "$EC/shift_mode"
+echo "$sb"    > "$EC/super_battery"
+echo "$fan"   > "$EC/fan_mode"
+echo "${boost:-off}" > "$EC/cooler_boost"
+/usr/bin/powerprofilesctl set "$profile" 2>/dev/null
+echo "$1" > "$FLAG"
+logger -t msi-power-auto "manual preset $1 -> shift=$shift super_battery=$sb fan=$fan cooler_boost=${boost:-off} profile=$profile"

@@ -1,0 +1,10 @@
+[Unit]
+Description=Apply MSI power mode for current AC state
+After=systemd-modules-load.service power-profiles-daemon.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/msi-power-auto
+
+[Install]
+WantedBy=multi-user.target

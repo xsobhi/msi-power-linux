@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Power Mode
+Comment=Choose MSI power mode (Extreme / Balanced / Silent / Super Battery / Automatic)
+Exec=/usr/local/bin/power-mode
+Icon=preferences-system-power
+Terminal=false
+Type=Application
+Categories=Settings;

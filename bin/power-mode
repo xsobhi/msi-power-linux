@@ -1,0 +1,24 @@
+#!/bin/bash
+# Desktop picker for MSI power presets (like MSI Center "User Scenario").
+EC=/sys/devices/platform/msi-ec
+if [ "$1" = auto ]; then
+    sudo -n /usr/local/bin/msi-power-set auto && notify-send -a "Power Mode" -i battery "Power mode: Automatic" "Balanced on charger, Super Battery on battery"
+    exit
+fi
+cur="MSI: $(cat $EC/shift_mode 2>/dev/null) | Cooler Boost: $(cat $EC/cooler_boost 2>/dev/null) | Super Battery: $(cat $EC/super_battery 2>/dev/null) | Fans: $(cat $EC/fan_mode 2>/dev/null) | Profile: $(powerprofilesctl get)"
+[ -f /run/msi-power-manual ] && mode="Manual: $(cat /run/msi-power-manual)" || mode="Automatic (battery/charger)"
+choice=$(zenity --list --radiolist --title="Power Mode" --width=560 --height=330 \
+    --text="Current: $mode\n$cur\n\nManual choice stays until you pick Automatic or reboot." \
+    --column="" --column="id" --column="Mode" --column="What it does" --hide-column=2 --print-column=2 \
+    FALSE extreme      "Extreme Performance" "Max CPU power — plugged-in gaming" \
+    FALSE extremeboost "Extreme + Cooler Boost" "Max CPU power + fans at maximum (loud), fewer FPS drops" \
+    FALSE balanced     "Balanced"            "MSI Comfort — everyday use" \
+    FALSE silent       "Silent"              "Quiet fans, lower CPU power" \
+    FALSE superbattery "Super Battery"       "Maximum battery life, CPU heavily limited" \
+    FALSE auto         "Automatic"           "Balanced on charger, Super Battery on battery") || exit 0
+[ -n "$choice" ] || exit 0
+if sudo -n /usr/local/bin/msi-power-set "$choice"; then
+    notify-send -a "Power Mode" -i battery "Power mode: $choice" "MSI: $(cat $EC/shift_mode), Super Battery: $(cat $EC/super_battery), Fans: $(cat $EC/fan_mode)"
+else
+    zenity --error --text="Could not change power mode (is the msi-ec driver loaded?)"
+fi

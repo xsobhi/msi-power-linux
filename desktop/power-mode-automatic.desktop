@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Power Mode – Automatic
+Comment=Return to automatic: Balanced on charger, Super Battery on battery
+Exec=/usr/local/bin/power-mode auto
+Icon=battery
+Terminal=false
+Type=Application
+Categories=Settings;
