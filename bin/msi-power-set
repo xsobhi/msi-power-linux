@@ -1,5 +1,5 @@
 #!/bin/sh
-# Usage: msi-power-set extreme|extremeboost|balanced|silent|superbattery|auto
+# Usage: msi-power-set extreme|extremeboost|balanced|silent|superbattery|auto|calibrate|calibrate-off
 # Manual presets stick (until reboot or "auto"); "auto" returns to AC/battery switching.
 EC=/sys/devices/platform/msi-ec
 FLAG=/run/msi-power-manual
@@ -10,7 +10,17 @@ case "$1" in
     silent)       shift=eco;     sb=off; fan=silent; profile=balanced ;;
     superbattery) shift=eco;     sb=on;  fan=auto;   profile=power-saver ;;
     auto)         rm -f "$FLAG"; exec /usr/local/bin/msi-power-auto ;;
-    *) echo "usage: $0 extreme|extremeboost|balanced|silent|superbattery|auto" >&2; exit 2 ;;
+    # Battery calibration: stop UPower so its critical-battery action (HybridSleep) can't fire.
+    # Runtime mask lives in /run, so it is undone automatically when the battery dies and you reboot.
+    calibrate)
+        systemctl mask --runtime upower.service && systemctl stop upower.service || exit 1
+        touch /run/battery-calibration
+        logger -t msi-power-auto "battery calibration started, upower stopped"; exit 0 ;;
+    calibrate-off)
+        rm -f /run/battery-calibration
+        systemctl unmask --runtime upower.service; systemctl start upower.service
+        logger -t msi-power-auto "battery calibration stopped, upower started"; exit 0 ;;
+    *) echo "usage: $0 extreme|extremeboost|balanced|silent|superbattery|auto|calibrate|calibrate-off" >&2; exit 2 ;;
 esac
 [ -d "$EC" ] || { echo "msi-ec driver not loaded" >&2; exit 1; }
 echo "$shift" > "$EC/shift_mode"

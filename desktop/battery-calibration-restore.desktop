@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Battery calibration restore
+Comment=Restore low-battery actions after a battery calibration run
+Exec=/usr/local/bin/power-mode --calibration-restore
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

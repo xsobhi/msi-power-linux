@@ -1,13 +1,54 @@
 #!/bin/bash
 # Desktop picker for MSI power presets (like MSI Center "User Scenario").
 EC=/sys/devices/platform/msi-ec
+CSD=org.cinnamon.settings-daemon.plugins.power
+CALIB_SAVED="$HOME/.config/battery-calibration.saved"   # user's Cinnamon power settings while calibrating
+
+# Battery calibration: stop every "low battery" action so the laptop drains until it shuts off.
+calibrate_on() {
+    zenity --question --title="Battery Calibration" --width=460 --ok-label="Start" --cancel-label="Cancel" \
+        --text="Low-battery hibernate/sleep, idle sleep and lid-close sleep will be turned off so the battery can drain until the laptop powers off by itself.\n\n1. Charge to 100% first (then leave it plugged in ~1 hour).\n2. Unplug and use the laptop normally until it shuts off.\n3. Leave it off a few hours, then charge to 100% without interrupting.\n\nThe battery icon will be blank while calibrating. Everything is restored automatically on the next login after it dies, or pick \"Stop battery calibration\" here." || return 0
+    [ -f "$CALIB_SAVED" ] || for k in critical-battery-action sleep-inactive-battery-timeout lid-close-battery-action; do
+        echo "$k $(gsettings get $CSD $k)"
+    done > "$CALIB_SAVED"
+    gsettings set $CSD critical-battery-action 'nothing'
+    gsettings set $CSD sleep-inactive-battery-timeout 0
+    gsettings set $CSD lid-close-battery-action 'nothing'
+    if sudo -n /usr/local/bin/msi-power-set calibrate; then
+        notify-send -a "Power Mode" -i battery-caution "Battery calibration started" "Low-battery actions are off — the laptop will run until the battery is empty."
+    else
+        calibrate_restore_settings
+        zenity --error --text="Could not stop UPower — calibration not started."
+    fi
+}
+
+calibrate_restore_settings() {
+    [ -f "$CALIB_SAVED" ] || return 0
+    while read -r k v; do gsettings set $CSD "$k" "$v"; done < "$CALIB_SAVED"
+    rm -f "$CALIB_SAVED"
+}
+
+# Run from autostart: after the battery died and the laptop rebooted (/run flag gone), put settings back.
+if [ "$1" = --calibration-restore ]; then
+    [ -f "$CALIB_SAVED" ] && [ ! -f /run/battery-calibration ] || exit 0
+    calibrate_restore_settings
+    notify-send -a "Power Mode" -i battery "Battery calibration finished" "Low-battery actions restored. Now charge to 100% without unplugging."
+    exit
+fi
+
 if [ "$1" = auto ]; then
     sudo -n /usr/local/bin/msi-power-set auto && notify-send -a "Power Mode" -i battery "Power mode: Automatic" "Balanced on charger, Super Battery on battery"
     exit
 fi
 cur="MSI: $(cat $EC/shift_mode 2>/dev/null) | Cooler Boost: $(cat $EC/cooler_boost 2>/dev/null) | Super Battery: $(cat $EC/super_battery 2>/dev/null) | Fans: $(cat $EC/fan_mode 2>/dev/null) | Profile: $(powerprofilesctl get)"
 [ -f /run/msi-power-manual ] && mode="Manual: $(cat /run/msi-power-manual)" || mode="Automatic (battery/charger)"
-choice=$(zenity --list --radiolist --title="Power Mode" --width=560 --height=330 \
+if [ -f /run/battery-calibration ]; then
+    mode="$mode | BATTERY CALIBRATION ON"
+    calib=(FALSE calibrate-off "Stop battery calibration" "Turn low-battery sleep/hibernate back on")
+else
+    calib=(FALSE calibrate "Battery calibration" "Drain until power-off: disables low-battery sleep/hibernate")
+fi
+choice=$(zenity --list --radiolist --title="Power Mode" --width=560 --height=360 \
     --text="Current: $mode\n$cur\n\nManual choice stays until you pick Automatic or reboot." \
     --column="" --column="id" --column="Mode" --column="What it does" --hide-column=2 --print-column=2 \
     FALSE extreme      "Extreme Performance" "Max CPU power — plugged-in gaming" \
@@ -15,8 +56,17 @@ choice=$(zenity --list --radiolist --title="Power Mode" --width=560 --height=330
     FALSE balanced     "Balanced"            "MSI Comfort — everyday use" \
     FALSE silent       "Silent"              "Quiet fans, lower CPU power" \
     FALSE superbattery "Super Battery"       "Maximum battery life, CPU heavily limited" \
-    FALSE auto         "Automatic"           "Balanced on charger, Super Battery on battery") || exit 0
+    FALSE auto         "Automatic"           "Balanced on charger, Super Battery on battery" \
+    "${calib[@]}") || exit 0
 [ -n "$choice" ] || exit 0
+case "$choice" in
+    calibrate) calibrate_on; exit ;;
+    calibrate-off)
+        sudo -n /usr/local/bin/msi-power-set calibrate-off
+        calibrate_restore_settings
+        notify-send -a "Power Mode" -i battery "Battery calibration stopped" "Low-battery sleep/hibernate restored."
+        exit ;;
+esac
 if sudo -n /usr/local/bin/msi-power-set "$choice"; then
     notify-send -a "Power Mode" -i battery "Power mode: $choice" "MSI: $(cat $EC/shift_mode), Super Battery: $(cat $EC/super_battery), Fans: $(cat $EC/fan_mode)"
 else

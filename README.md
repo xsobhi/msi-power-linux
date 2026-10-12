@@ -5,6 +5,7 @@ MSI Center–style power modes for MSI laptops on Linux, with **automatic switch
 - **On the charger:** MSI *Comfort* (balanced) + Linux `balanced` profile
 - **On battery:** MSI *Eco* + *Super Battery* + Linux `power-saver` profile
 - Plus a small **Power Mode** picker (like MSI Center's "User Scenario") for manual presets.
+- And a **Battery calibration** mode that lets the battery drain until the laptop powers off.
 
 It's a thin automation layer on top of the [**msi-ec**](https://github.com/BeardOverflow/msi-ec) kernel driver
 (not included, GPL-2.0, by BeardOverflow and contributors), which exposes the laptop's embedded-controller
@@ -33,6 +34,20 @@ override it. After a reboot it always starts in Automatic, so you can't get stuc
 On our Katana, Cooler Boost ran the fans at ~6,600 / 5,900 RPM vs ~4,000–4,500 RPM on the auto curve
 while gaming (CPU at 94 °C), and raised average CPU clocks by ~8 %.
 
+## Battery calibration
+
+Pick **Battery calibration** in Power Mode to drain the battery fully so its charge gauge re-learns its capacity.
+It turns off everything that would otherwise sleep/hibernate the laptop before the battery is empty:
+
+- Cinnamon's critical-battery action, idle sleep on battery and lid-close sleep on battery (saved and restored)
+- UPower, whose own `CriticalPowerAction` (e.g. HybridSleep at 2 %) can't be disabled — it is stopped and
+  runtime-masked, so it comes back by itself on the next boot
+
+Steps: charge to 100 % (leave it plugged in ~1 hour more), start calibration, unplug and use the laptop until it
+shuts off, leave it off a few hours, then charge to 100 % without interrupting. At the next login your settings
+are restored automatically and a notification tells you to charge. To cancel early, pick **Stop battery calibration**.
+The battery icon is blank while calibrating. Calibration fixes the percentage reading, not battery wear.
+
 ## Requirements
 
 1. **msi-ec** with support for your EC firmware. The version shipped in the kernel may be too old — check:
@@ -57,6 +72,7 @@ Then open **Power Mode** from the app menu (or run `power-mode`). To put it on t
 `cp /usr/share/applications/power-mode*.desktop ~/Desktop/` and mark them trusted.
 
 Command line: `sudo msi-power-set extreme|extremeboost|balanced|silent|superbattery|auto`
+(`calibrate` / `calibrate-off` only stop/start UPower — use the picker for calibration, it also handles the Cinnamon settings)
 
 ## How it works
 
@@ -64,7 +80,8 @@ Command line: `sudo msi-power-set extreme|extremeboost|balanced|silent|superbatt
 |---|---|
 | `/usr/local/bin/msi-power-auto` | applies the charger/battery mode (skipped while a manual preset is active) |
 | `/usr/local/bin/msi-power-set` | applies a named preset; only accepts the fixed names above |
-| `/usr/local/bin/power-mode` | zenity picker + notifications |
+| `/usr/local/bin/power-mode` | zenity picker + notifications + battery calibration |
+| `/etc/xdg/autostart/battery-calibration-restore.desktop` | at login, restores low-battery settings after a calibration run |
 | `/etc/udev/rules.d/99-msi-power-auto.rules` | re-applies on charger plug/unplug (any `Mains` power supply) and notifies logged-in desktop sessions |
 | `msi-power-auto.service` | applies at boot |
 | `/usr/lib/systemd/system-sleep/msi-power-auto` | re-applies after resume |

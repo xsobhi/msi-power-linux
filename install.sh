@@ -19,6 +19,8 @@ install -m 644 udev/99-msi-power-auto.rules /etc/udev/rules.d/
 install -m 644 systemd/msi-power-auto.service /etc/systemd/system/
 install -m 755 systemd/system-sleep/msi-power-auto /usr/lib/systemd/system-sleep/msi-power-auto
 install -m 644 desktop/power-mode.desktop desktop/power-mode-automatic.desktop /usr/share/applications/
+# Restores low-battery actions at login after a battery calibration run ended with the battery dying
+install -m 644 desktop/battery-calibration-restore.desktop /etc/xdg/autostart/
 
 # Passwordless sudo for exactly one command (it only accepts the fixed preset names)
 tmp=$(mktemp)
