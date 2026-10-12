@@ -12,7 +12,8 @@ cd "$(dirname "$0")"
 
 [ -d /sys/devices/platform/msi-ec ] || echo "WARNING: msi-ec driver not loaded - see README. Only the Linux power profile will switch until it is."
 command -v powerprofilesctl >/dev/null || echo "WARNING: powerprofilesctl not found - install power-profiles-daemon."
-command -v zenity >/dev/null || echo "WARNING: zenity not found - the Power Mode picker needs it."
+python3 -c "import gi; gi.require_version('Gtk', '3.0')" 2>/dev/null || echo "WARNING: GTK 3 for Python not found - install python3-gi and gir1.2-gtk-3.0 for the Power Mode window."
+command -v prime-select >/dev/null || echo "NOTE: prime-select not found - the Graphics (NVIDIA/Hybrid/Intel) buttons need nvidia-prime."
 
 install -m 755 bin/msi-power-auto bin/msi-power-set bin/power-mode /usr/local/bin/
 install -m 644 udev/99-msi-power-auto.rules /etc/udev/rules.d/

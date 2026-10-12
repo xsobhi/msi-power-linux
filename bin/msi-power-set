@@ -1,5 +1,5 @@
 #!/bin/sh
-# Usage: msi-power-set extreme|extremeboost|balanced|silent|superbattery|auto|calibrate|calibrate-off
+# Usage: msi-power-set extreme|extremeboost|balanced|silent|superbattery|auto|calibrate|calibrate-off|gpu MODE
 # Manual presets stick (until reboot or "auto"); "auto" returns to AC/battery switching.
 EC=/sys/devices/platform/msi-ec
 FLAG=/run/msi-power-manual
@@ -20,7 +20,13 @@ case "$1" in
         rm -f /run/battery-calibration
         systemctl unmask --runtime upower.service; systemctl start upower.service
         logger -t msi-power-auto "battery calibration stopped, upower started"; exit 0 ;;
-    *) echo "usage: $0 extreme|extremeboost|balanced|silent|superbattery|auto|calibrate|calibrate-off" >&2; exit 2 ;;
+    # GPU mode via prime-select; takes effect after a restart. Remember what this boot runs (cleared on reboot).
+    gpu)
+        case "$2" in nvidia|on-demand|intel) ;; *) echo "usage: $0 gpu nvidia|on-demand|intel" >&2; exit 2 ;; esac
+        [ -f /run/gpu-mode-boot ] || prime-select query > /run/gpu-mode-boot
+        prime-select "$2" || exit 1
+        logger -t msi-power-auto "GPU mode -> $2 (after restart)"; exit 0 ;;
+    *) echo "usage: $0 extreme|extremeboost|balanced|silent|superbattery|auto|calibrate|calibrate-off|gpu MODE" >&2; exit 2 ;;
 esac
 [ -d "$EC" ] || { echo "msi-ec driver not loaded" >&2; exit 1; }
 echo "$shift" > "$EC/shift_mode"

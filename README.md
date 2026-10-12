@@ -4,8 +4,8 @@ MSI Center–style power modes for MSI laptops on Linux, with **automatic switch
 
 - **On the charger:** MSI *Comfort* (balanced) + Linux `balanced` profile
 - **On battery:** MSI *Eco* + *Super Battery* + Linux `power-saver` profile
-- Plus a small **Power Mode** picker (like MSI Center's "User Scenario") for manual presets.
-- And a **Battery calibration** mode that lets the battery drain until the laptop powers off.
+- Plus a small **Power Mode** window (like MSI Center's "User Scenario") for manual presets,
+  **graphics mode** (NVIDIA / Hybrid / Intel, applied after a restart) and **battery calibration**.
 
 It's a thin automation layer on top of the [**msi-ec**](https://github.com/BeardOverflow/msi-ec) kernel driver
 (not included, GPL-2.0, by BeardOverflow and contributors), which exposes the laptop's embedded-controller
@@ -36,7 +36,7 @@ while gaming (CPU at 94 °C), and raised average CPU clocks by ~8 %.
 
 ## Battery calibration
 
-Pick **Battery calibration** in Power Mode to drain the battery fully so its charge gauge re-learns its capacity.
+Click **Battery calibration…** in Power Mode to drain the battery fully so its charge gauge re-learns its capacity.
 It turns off everything that would otherwise sleep/hibernate the laptop before the battery is empty:
 
 - Cinnamon's critical-battery action, idle sleep on battery and lid-close sleep on battery (saved and restored)
@@ -48,6 +48,16 @@ shuts off, leave it off a few hours, then charge to 100 % without interrupting. 
 are restored automatically and a notification tells you to charge. To cancel early, pick **Stop battery calibration**.
 The battery icon is blank while calibrating. Calibration fixes the percentage reading, not battery wear.
 
+The calibration page shows live charge, power draw and battery health, ticks off the steps, and has options:
+don't sleep when idle / when the lid is closed (on by default), keep the screen on, and drain faster
+(switches to Extreme Performance; your previous mode comes back afterwards).
+
+## Graphics mode
+
+The three buttons under the presets switch the PRIME GPU mode with `prime-select` (needs `nvidia-prime`):
+**NVIDIA** (everything on the dGPU), **Hybrid** (`on-demand`) or **Intel** (dGPU off). It takes effect after a
+restart; until then the window says which mode is running and offers **Restart now**. It never switches by itself.
+
 ## Requirements
 
 1. **msi-ec** with support for your EC firmware. The version shipped in the kernel may be too old — check:
@@ -58,7 +68,8 @@ The battery icon is blank while calibrating. Calibration fixes the percentage re
    If unsupported, install the upstream version (DKMS): see the [msi-ec README](https://github.com/BeardOverflow/msi-ec).
    With **Secure Boot** on, DKMS signs the module with your local MOK key — enroll it once
    (`sudo mokutil --import /var/lib/shim-signed/mok/MOK.der`, reboot, "Enroll MOK").
-2. `power-profiles-daemon` (`powerprofilesctl`), `zenity` and `libnotify-bin` (`notify-send`).
+2. `power-profiles-daemon` (`powerprofilesctl`), `python3-gi` + `gir1.2-gtk-3.0` and `libnotify-bin` (`notify-send`).
+   Optional: `nvidia-prime` (`prime-select`) for the Graphics buttons.
 
 ## Install
 
@@ -72,7 +83,7 @@ Then open **Power Mode** from the app menu (or run `power-mode`). To put it on t
 `cp /usr/share/applications/power-mode*.desktop ~/Desktop/` and mark them trusted.
 
 Command line: `sudo msi-power-set extreme|extremeboost|balanced|silent|superbattery|auto`
-(`calibrate` / `calibrate-off` only stop/start UPower — use the picker for calibration, it also handles the Cinnamon settings)
+(`gpu nvidia|on-demand|intel` switches the GPU mode; `calibrate` / `calibrate-off` only stop/start UPower — use the window for calibration, it also handles the Cinnamon settings)
 
 ## How it works
 
@@ -80,7 +91,7 @@ Command line: `sudo msi-power-set extreme|extremeboost|balanced|silent|superbatt
 |---|---|
 | `/usr/local/bin/msi-power-auto` | applies the charger/battery mode (skipped while a manual preset is active) |
 | `/usr/local/bin/msi-power-set` | applies a named preset; only accepts the fixed names above |
-| `/usr/local/bin/power-mode` | zenity picker + notifications + battery calibration |
+| `/usr/local/bin/power-mode` | GTK window: presets, graphics mode, battery calibration; notifications |
 | `/etc/xdg/autostart/battery-calibration-restore.desktop` | at login, restores low-battery settings after a calibration run |
 | `/etc/udev/rules.d/99-msi-power-auto.rules` | re-applies on charger plug/unplug (any `Mains` power supply) and notifies logged-in desktop sessions |
 | `msi-power-auto.service` | applies at boot |

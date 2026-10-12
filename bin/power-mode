@@ -1,74 +1,494 @@
-#!/bin/bash
-# Desktop picker for MSI power presets (like MSI Center "User Scenario").
-EC=/sys/devices/platform/msi-ec
-CSD=org.cinnamon.settings-daemon.plugins.power
-CALIB_SAVED="$HOME/.config/battery-calibration.saved"   # user's Cinnamon power settings while calibrating
+#!/usr/bin/python3
+"""Power Mode - MSI power presets, GPU mode and battery calibration (like MSI Center "User Scenario").
 
-# Battery calibration: stop every "low battery" action so the laptop drains until it shuts off.
-calibrate_on() {
-    zenity --question --title="Battery Calibration" --width=460 --ok-label="Start" --cancel-label="Cancel" \
-        --text="Low-battery hibernate/sleep, idle sleep and lid-close sleep will be turned off so the battery can drain until the laptop powers off by itself.\n\n1. Charge to 100% first (then leave it plugged in ~1 hour).\n2. Unplug and use the laptop normally until it shuts off.\n3. Leave it off a few hours, then charge to 100% without interrupting.\n\nThe battery icon will be blank while calibrating. Everything is restored automatically on the next login after it dies, or pick \"Stop battery calibration\" here." || return 0
-    [ -f "$CALIB_SAVED" ] || for k in critical-battery-action sleep-inactive-battery-timeout lid-close-battery-action; do
-        echo "$k $(gsettings get $CSD $k)"
-    done > "$CALIB_SAVED"
-    gsettings set $CSD critical-battery-action 'nothing'
-    gsettings set $CSD sleep-inactive-battery-timeout 0
-    gsettings set $CSD lid-close-battery-action 'nothing'
-    if sudo -n /usr/local/bin/msi-power-set calibrate; then
-        notify-send -a "Power Mode" -i battery-caution "Battery calibration started" "Low-battery actions are off — the laptop will run until the battery is empty."
-    else
-        calibrate_restore_settings
-        zenity --error --text="Could not stop UPower — calibration not started."
-    fi
+  power-mode                         open the window
+  power-mode auto                    return to automatic charger/battery switching
+  power-mode --calibration-restore   (autostart) restore low-battery settings after a calibration run
+"""
+import os
+import subprocess
+import sys
+import threading
+
+EC = "/sys/devices/platform/msi-ec"
+HELPER = "/usr/local/bin/msi-power-set"
+CSD = "org.cinnamon.settings-daemon.plugins.power"
+CALIB_FLAG = "/run/battery-calibration"          # set by msi-power-set while UPower is stopped
+CALIB_SAVED = os.path.expanduser("~/.config/battery-calibration.saved")  # settings to restore afterwards
+GPU_BOOT = "/run/gpu-mode-boot"                  # GPU mode this boot started with (written on first change)
+
+PRESETS = [
+    ("extreme", "Extreme Performance", "Max CPU power — plugged-in gaming"),
+    ("extremeboost", "Extreme + Cooler Boost", "Max CPU power + fans at maximum (loud), fewer FPS drops"),
+    ("balanced", "Balanced", "MSI Comfort — everyday use"),
+    ("silent", "Silent", "Quiet fans, lower CPU power"),
+    ("superbattery", "Super Battery", "Maximum battery life, CPU heavily limited"),
+    ("auto", "Automatic", "Balanced on charger, Super Battery on battery"),
+]
+GPU_MODES = [
+    ("nvidia", "NVIDIA", "Everything on the NVIDIA GPU — best for gaming, uses more battery"),
+    ("on-demand", "Hybrid", "Intel by default, NVIDIA for apps that ask for it"),
+    ("intel", "Intel", "NVIDIA switched off completely — longest battery life"),
+]
+
+
+def read(path, default=""):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def run(*cmd):
+    return subprocess.run(cmd, capture_output=True, text=True)
+
+
+def helper(*args):
+    return run("sudo", "-n", HELPER, *args)
+
+
+def notify(title, body="", icon="battery"):
+    subprocess.Popen(["notify-send", "-a", "Power Mode", "-i", icon, title, body],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def gsettings_get(schema, key):
+    return run("gsettings", "get", schema, key).stdout.strip()
+
+
+def gsettings_set(schema, key, value):
+    run("gsettings", "set", schema, key, value)
+
+
+# ---------- battery calibration ----------
+
+# (schema, key, value while calibrating); the first one is always applied
+CALIB_SETTINGS = {
+    "critical": [(CSD, "critical-battery-action", "'nothing'")],
+    "idle": [(CSD, "sleep-inactive-battery-timeout", "0")],
+    "lid": [(CSD, "lid-close-battery-action", "'nothing'")],
+    "screen": [(CSD, "sleep-display-battery", "0"),
+               ("org.cinnamon.desktop.session", "idle-delay", "uint32 0")],
 }
 
-calibrate_restore_settings() {
-    [ -f "$CALIB_SAVED" ] || return 0
-    while read -r k v; do gsettings set $CSD "$k" "$v"; done < "$CALIB_SAVED"
-    rm -f "$CALIB_SAVED"
-}
 
-# Run from autostart: after the battery died and the laptop rebooted (/run flag gone), put settings back.
-if [ "$1" = --calibration-restore ]; then
-    [ -f "$CALIB_SAVED" ] && [ ! -f /run/battery-calibration ] || exit 0
-    calibrate_restore_settings
-    notify-send -a "Power Mode" -i battery "Battery calibration finished" "Low-battery actions restored. Now charge to 100% without unplugging."
-    exit
-fi
+def calibration_running():
+    return os.path.exists(CALIB_FLAG)
 
-if [ "$1" = auto ]; then
-    sudo -n /usr/local/bin/msi-power-set auto && notify-send -a "Power Mode" -i battery "Power mode: Automatic" "Balanced on charger, Super Battery on battery"
-    exit
-fi
-cur="MSI: $(cat $EC/shift_mode 2>/dev/null) | Cooler Boost: $(cat $EC/cooler_boost 2>/dev/null) | Super Battery: $(cat $EC/super_battery 2>/dev/null) | Fans: $(cat $EC/fan_mode 2>/dev/null) | Profile: $(powerprofilesctl get)"
-[ -f /run/msi-power-manual ] && mode="Manual: $(cat /run/msi-power-manual)" || mode="Automatic (battery/charger)"
-if [ -f /run/battery-calibration ]; then
-    mode="$mode | BATTERY CALIBRATION ON"
-    calib=(FALSE calibrate-off "Stop battery calibration" "Turn low-battery sleep/hibernate back on")
-else
-    calib=(FALSE calibrate "Battery calibration" "Drain until power-off: disables low-battery sleep/hibernate")
-fi
-choice=$(zenity --list --radiolist --title="Power Mode" --width=560 --height=360 \
-    --text="Current: $mode\n$cur\n\nManual choice stays until you pick Automatic or reboot." \
-    --column="" --column="id" --column="Mode" --column="What it does" --hide-column=2 --print-column=2 \
-    FALSE extreme      "Extreme Performance" "Max CPU power — plugged-in gaming" \
-    FALSE extremeboost "Extreme + Cooler Boost" "Max CPU power + fans at maximum (loud), fewer FPS drops" \
-    FALSE balanced     "Balanced"            "MSI Comfort — everyday use" \
-    FALSE silent       "Silent"              "Quiet fans, lower CPU power" \
-    FALSE superbattery "Super Battery"       "Maximum battery life, CPU heavily limited" \
-    FALSE auto         "Automatic"           "Balanced on charger, Super Battery on battery" \
-    "${calib[@]}") || exit 0
-[ -n "$choice" ] || exit 0
-case "$choice" in
-    calibrate) calibrate_on; exit ;;
-    calibrate-off)
-        sudo -n /usr/local/bin/msi-power-set calibrate-off
-        calibrate_restore_settings
-        notify-send -a "Power Mode" -i battery "Battery calibration stopped" "Low-battery sleep/hibernate restored."
-        exit ;;
-esac
-if sudo -n /usr/local/bin/msi-power-set "$choice"; then
-    notify-send -a "Power Mode" -i battery "Power mode: $choice" "MSI: $(cat $EC/shift_mode), Super Battery: $(cat $EC/super_battery), Fans: $(cat $EC/fan_mode)"
-else
-    zenity --error --text="Could not change power mode (is the msi-ec driver loaded?)"
-fi
+
+def calibration_start(options, drain_fast):
+    """options: keys of CALIB_SETTINGS to turn off. Returns an error message or None."""
+    if not os.path.exists(CALIB_SAVED):
+        lines = []
+        for opt in options:
+            for schema, key, _ in CALIB_SETTINGS[opt]:
+                lines.append(f"{schema} {key} {gsettings_get(schema, key)}")
+        if drain_fast:
+            lines.append("@preset " + (read("/run/msi-power-manual") or "auto"))
+        os.makedirs(os.path.dirname(CALIB_SAVED), exist_ok=True)
+        with open(CALIB_SAVED, "w") as f:
+            f.write("\n".join(lines) + "\n")
+    for opt in options:
+        for schema, key, value in CALIB_SETTINGS[opt]:
+            gsettings_set(schema, key, value)
+    if helper("calibrate").returncode != 0:
+        calibration_restore_settings()
+        return "Could not stop UPower — calibration not started."
+    if drain_fast:
+        helper("extreme")
+    return None
+
+
+def calibration_restore_settings():
+    """Put back what calibration_start saved. Old files have 'key value' lines for the power schema."""
+    try:
+        with open(CALIB_SAVED) as f:
+            lines = [l.strip() for l in f if l.strip()]
+    except OSError:
+        return
+    for line in lines:
+        if line.startswith("@preset "):
+            helper(line.split(" ", 1)[1])
+            continue
+        first, rest = line.split(" ", 1)
+        if "." in first:
+            key, value = rest.split(" ", 1)
+            gsettings_set(first, key, value)
+        else:
+            gsettings_set(CSD, first, rest)
+    os.unlink(CALIB_SAVED)
+
+
+def calibration_saved_options():
+    """Which options the running calibration used, from the keys it saved."""
+    words = read(CALIB_SAVED).split()
+    found = {opt for opt, settings in CALIB_SETTINGS.items() if settings[0][1] in words}
+    if "@preset" in words:
+        found.add("fast")
+    return found
+
+
+def calibration_stop():
+    helper("calibrate-off")
+    calibration_restore_settings()
+
+
+def battery_info():
+    for name in sorted(os.listdir("/sys/class/power_supply")):
+        p = f"/sys/class/power_supply/{name}"
+        if read(f"{p}/type") != "Battery":
+            continue
+        num = lambda f: int(read(f"{p}/{f}", "0") or 0)  # noqa: E731
+        if os.path.exists(f"{p}/energy_full"):  # µWh / µW
+            full, design, rate, volts = num("energy_full"), num("energy_full_design"), num("power_now"), 1e6
+        else:  # µAh / µA (MSI EC): convert with the voltages
+            volts = num("voltage_min_design") or None
+            full, design = num("charge_full"), num("charge_full_design")
+            rate = num("voltage_now") * num("current_now") / 1e6
+        return {
+            "percent": num("capacity"),
+            "status": read(f"{p}/status", "Unknown"),
+            "health": round(100 * full / design) if design else None,
+            "full_wh": full * volts / 1e12 if volts else None,
+            "design_wh": design * volts / 1e12 if volts else None,
+            "rate": rate / 1e6,
+            "cycles": num("cycle_count"),
+        }
+    return None
+
+
+def ac_online():
+    for name in os.listdir("/sys/class/power_supply"):
+        p = f"/sys/class/power_supply/{name}"
+        if read(f"{p}/type") == "Mains":
+            return read(f"{p}/online") == "1"
+    return True
+
+
+# ---------- CLI entry points ----------
+
+if len(sys.argv) > 1:
+    if sys.argv[1] == "auto":
+        if helper("auto").returncode == 0:
+            notify("Power mode: Automatic", "Balanced on charger, Super Battery on battery")
+    elif sys.argv[1] == "--calibration-restore":
+        # After the battery died and the laptop rebooted (/run flag gone), put settings back.
+        if os.path.exists(CALIB_SAVED) and not calibration_running():
+            calibration_restore_settings()
+            notify("Battery calibration finished", "Low-battery actions restored. Now charge to 100% without unplugging.")
+    sys.exit(0)
+
+import gi  # noqa: E402
+gi.require_version("Gtk", "3.0")
+from gi.repository import GLib, Gtk  # noqa: E402
+
+CSS = b"""
+.dim { opacity: 0.65; }
+.section { font-weight: bold; margin-top: 6px; }
+.banner { background: alpha(@warning_color, 0.18); border-radius: 6px; padding: 8px 10px; }
+.big { font-size: 22pt; font-weight: bold; }
+.step-done { color: @success_color; }
+"""
+
+
+class PowerMode(Gtk.Window):
+    def __init__(self):
+        super().__init__(title="Power Mode")
+        self.updating = True  # ignore toggled signals while widgets are being set from the real state
+        self.set_default_size(560, -1)
+        self.set_resizable(False)
+        self.set_position(Gtk.WindowPosition.CENTER)
+        self.set_icon_name("preferences-system-power")
+        provider = Gtk.CssProvider()
+        provider.load_from_data(CSS)
+        Gtk.StyleContext.add_provider_for_screen(self.get_screen(), provider,
+                                                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        self.header = Gtk.HeaderBar(show_close_button=True, title="Power Mode")
+        self.back = Gtk.Button.new_from_icon_name("go-previous-symbolic", Gtk.IconSize.BUTTON)
+        self.back.set_tooltip_text("Back")
+        self.back.connect("clicked", lambda *_: self.show_page("main"))
+        self.header.pack_start(self.back)
+        self.set_titlebar(self.header)
+
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT_RIGHT,
+                               vhomogeneous=False, interpolate_size=True)
+        self.stack.add_named(self.build_main(), "main")
+        self.stack.add_named(self.build_calibration(), "calib")
+        self.add(self.stack)
+        self.busy = False
+        self.show_all()
+        self.show_page("main")
+        self.refresh()
+        GLib.timeout_add_seconds(2, self.tick)
+
+    # ----- layout helpers -----
+    @staticmethod
+    def label(text, *classes, wrap=False, xalign=0):
+        l = Gtk.Label(label=text, xalign=xalign, wrap=wrap, use_markup=True)
+        if wrap:
+            l.set_max_width_chars(60)
+        for c in classes:
+            l.get_style_context().add_class(c)
+        return l
+
+    @staticmethod
+    def page():
+        return Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=16)
+
+    # ----- main page -----
+    def build_main(self):
+        box = self.page()
+        self.calib_banner = Gtk.Box(spacing=8)
+        self.calib_banner.get_style_context().add_class("banner")
+        self.calib_banner.pack_start(self.label("<b>Battery calibration is running</b> — low-battery sleep is off."),
+                                     True, True, 0)
+        b = Gtk.Button(label="Open")
+        b.connect("clicked", lambda *_: self.show_page("calib"))
+        self.calib_banner.pack_end(b, False, False, 0)
+        box.pack_start(self.calib_banner, False, False, 0)
+
+        self.status = self.label("", "dim", wrap=True)
+        box.pack_start(self.status, False, False, 0)
+
+        box.pack_start(self.label("Power mode", "section"), False, False, 0)
+        self.preset_buttons = {}
+        group = None
+        for pid, name, desc in PRESETS:
+            rb = Gtk.RadioButton.new_from_widget(group)
+            group = group or rb
+            row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            row.pack_start(self.label(f"<b>{name}</b>"), False, False, 0)
+            row.pack_start(self.label(desc, "dim"), False, False, 0)
+            rb.add(row)
+            rb.connect("toggled", self.on_preset, pid)
+            self.preset_buttons[pid] = rb
+            box.pack_start(rb, False, False, 0)
+        box.pack_start(self.label("A manual mode stays until you pick Automatic or reboot.", "dim"), False, False, 0)
+
+        box.pack_start(Gtk.Separator(margin_top=6), False, False, 0)
+        box.pack_start(self.label("Graphics", "section"), False, False, 0)
+        gpu_row = Gtk.Box(homogeneous=True)
+        gpu_row.get_style_context().add_class("linked")
+        self.gpu_buttons = {}
+        for gid, name, desc in GPU_MODES:
+            tb = Gtk.ToggleButton(label=name, tooltip_text=desc)
+            tb.connect("toggled", self.on_gpu, gid)
+            self.gpu_buttons[gid] = tb
+            gpu_row.pack_start(tb, True, True, 0)
+        box.pack_start(gpu_row, False, False, 0)
+        gpu_info = Gtk.Box(spacing=8)
+        self.gpu_spinner = Gtk.Spinner()
+        self.gpu_label = self.label("", "dim", wrap=True)
+        self.restart_btn = Gtk.Button(label="Restart now")
+        self.restart_btn.get_style_context().add_class("suggested-action")
+        self.restart_btn.connect("clicked", self.on_restart)
+        gpu_info.pack_start(self.gpu_spinner, False, False, 0)
+        gpu_info.pack_start(self.gpu_label, True, True, 0)
+        gpu_info.pack_end(self.restart_btn, False, False, 0)
+        box.pack_start(gpu_info, False, False, 0)
+
+        box.pack_start(Gtk.Separator(margin_top=6), False, False, 0)
+        calib = Gtk.Button()
+        cbox = Gtk.Box(spacing=8)
+        cbox.pack_start(Gtk.Image.new_from_icon_name("battery-good-symbolic", Gtk.IconSize.BUTTON), False, False, 0)
+        cbox.pack_start(self.label("Battery calibration…"), True, True, 0)
+        cbox.pack_end(Gtk.Image.new_from_icon_name("go-next-symbolic", Gtk.IconSize.BUTTON), False, False, 0)
+        calib.add(cbox)
+        calib.connect("clicked", lambda *_: self.show_page("calib"))
+        box.pack_start(calib, False, False, 0)
+        return box
+
+    # ----- calibration page -----
+    def build_calibration(self):
+        box = self.page()
+        top = Gtk.Box(spacing=16)
+        self.bat_percent = self.label("", "big")
+        top.pack_start(self.bat_percent, False, False, 0)
+        self.bat_details = self.label("", wrap=True)
+        top.pack_start(self.bat_details, True, True, 0)
+        box.pack_start(top, False, False, 0)
+
+        box.pack_start(self.label("Steps", "section"), False, False, 0)
+        self.steps = []
+        for text in ("Charge to 100 % (then leave it plugged in about an hour more)",
+                     "Start calibration below, then unplug the charger",
+                     "Use the laptop until it powers off by itself",
+                     "Leave it off a few hours, then charge to 100 % without interrupting"):
+            l = self.label("", wrap=True)
+            l.text = text
+            self.steps.append(l)
+            box.pack_start(l, False, False, 0)
+
+        box.pack_start(self.label("While calibrating", "section"), False, False, 0)
+        box.pack_start(self.label("Low-battery hibernate/sleep is always turned off and UPower is stopped "
+                                  "(the battery icon will be blank).", "dim", wrap=True), False, False, 0)
+        self.opt = {}
+        for key, text, default in (("idle", "Don't sleep when idle", True),
+                                   ("lid", "Don't sleep when the lid is closed", True),
+                                   ("screen", "Keep the screen on (no blanking or lock)", False),
+                                   ("fast", "Drain faster — switch to Extreme Performance", False)):
+            cb = Gtk.CheckButton(label=text, active=default)
+            self.opt[key] = cb
+            box.pack_start(cb, False, False, 0)
+        box.pack_start(self.label("Everything is restored automatically at the next login after the battery "
+                                  "dies. Calibration fixes the percentage reading, not battery wear.",
+                                  "dim", wrap=True), False, False, 0)
+
+        self.calib_btn = Gtk.Button(margin_top=6)
+        self.calib_btn.connect("clicked", self.on_calibration)
+        box.pack_start(self.calib_btn, False, False, 0)
+        return box
+
+    # ----- state -----
+    def show_page(self, name):
+        self.stack.set_visible_child_name(name)
+        self.back.set_visible(name != "main")
+        self.header.set_title("Battery Calibration" if name == "calib" else "Power Mode")
+
+    def tick(self):
+        if not self.busy:
+            self.refresh()
+        return True
+
+    def refresh(self):
+        self.updating = True
+        manual = read("/run/msi-power-manual")
+        mode = f"Manual: {manual}" if manual else "Automatic (battery/charger)"
+        self.status.set_markup(GLib.markup_escape_text(
+            f"Current: {mode}\nMSI: {read(EC + '/shift_mode', '?')} · Cooler Boost: {read(EC + '/cooler_boost', '?')}"
+            f" · Super Battery: {read(EC + '/super_battery', '?')} · Fans: {read(EC + '/fan_mode', '?')}"
+            f" · Profile: {run('powerprofilesctl', 'get').stdout.strip()}"))
+        self.preset_buttons.get(manual or "auto", self.preset_buttons["auto"]).set_active(True)
+
+        gpu_next = run("prime-select", "query").stdout.strip()
+        gpu_now = read(GPU_BOOT) or gpu_next
+        for gid, tb in self.gpu_buttons.items():
+            tb.set_active(gid == gpu_next)
+        names = {g: n for g, n, _ in GPU_MODES}
+        if gpu_now != gpu_next:
+            self.gpu_label.set_text(f"Running {names.get(gpu_now, gpu_now)} — restart to switch to "
+                                    f"{names.get(gpu_next, gpu_next)}.")
+            self.restart_btn.show()
+        else:
+            self.gpu_label.set_text(f"Running {names.get(gpu_now, gpu_now)}. Changes apply after a restart.")
+            self.restart_btn.hide()
+
+        running = calibration_running()
+        self.calib_banner.set_visible(running)
+        saved = calibration_saved_options() if running else None
+        for key, cb in self.opt.items():
+            cb.set_sensitive(not running)
+            if saved is not None:  # show what this run actually turned off
+                cb.set_active(key in saved)
+        ctx = self.calib_btn.get_style_context()
+        ctx.remove_class("suggested-action" if running else "destructive-action")
+        ctx.add_class("destructive-action" if running else "suggested-action")
+        self.calib_btn.set_label("Stop calibration" if running else "Start calibration")
+
+        bat, ac = battery_info(), ac_online()
+        if bat:
+            self.bat_percent.set_text(f"{bat['percent']}%")
+            details = [f"<b>{bat['status']}</b> · charger {'connected' if ac else 'unplugged'}"]
+            if bat["rate"]:
+                details.append(f"{'Charging at' if bat['status'] == 'Charging' else 'Using'} {bat['rate']:.1f} W")
+            if bat["health"] is not None:
+                wh = f" ({bat['full_wh']:.1f} of {bat['design_wh']:.1f} Wh)" if bat["full_wh"] else ""
+                details.append(f"Health {bat['health']}%{wh}" + (f" · {bat['cycles']} cycles" if bat["cycles"] else ""))
+            self.bat_details.set_markup("\n".join(details))
+            done = [bat["percent"] >= 99 or bat["status"] == "Full" or running,
+                    running and not ac, False, False]
+        else:
+            self.bat_percent.set_text("—")
+            self.bat_details.set_text("No battery found")
+            done = [False] * 4
+        for i, (l, d) in enumerate(zip(self.steps, done)):
+            mark = "✓" if d else f"{i + 1}."
+            l.set_markup(f"{mark}  {GLib.markup_escape_text(l.text)}")
+            l.get_style_context().remove_class("step-done")
+            if d:
+                l.get_style_context().add_class("step-done")
+        self.updating = False
+
+    # ----- actions -----
+    def error(self, text):
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.ERROR,
+                              buttons=Gtk.ButtonsType.OK, text=text)
+        d.run()
+        d.destroy()
+
+    def confirm(self, title, text, ok):
+        d = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
+                              buttons=Gtk.ButtonsType.NONE, text=title, secondary_text=text)
+        d.add_buttons("Cancel", Gtk.ResponseType.CANCEL, ok, Gtk.ResponseType.OK)
+        r = d.run()
+        d.destroy()
+        return r == Gtk.ResponseType.OK
+
+    def on_preset(self, rb, pid):
+        if self.updating or not rb.get_active():
+            return
+        if helper(pid).returncode == 0:
+            notify(f"Power mode: {pid}", f"MSI: {read(EC + '/shift_mode')}, Super Battery: "
+                   f"{read(EC + '/super_battery')}, Fans: {read(EC + '/fan_mode')}")
+        else:
+            self.error("Could not change power mode (is the msi-ec driver loaded?)")
+        self.refresh()
+
+    def on_gpu(self, tb, gid):
+        if self.updating:
+            return
+        if not tb.get_active():  # can't untoggle the selected mode
+            self.refresh()
+            return
+        self.busy = True
+        for b in self.gpu_buttons.values():
+            b.set_sensitive(False)
+        self.gpu_spinner.start()
+        self.gpu_label.set_text("Switching graphics mode… (can take a minute)")
+        self.restart_btn.hide()
+
+        def work():
+            r = helper("gpu", gid)
+            GLib.idle_add(done, r)
+
+        def done(r):
+            self.gpu_spinner.stop()
+            for b in self.gpu_buttons.values():
+                b.set_sensitive(True)
+            self.busy = False
+            if r.returncode != 0:
+                self.error("Could not switch graphics mode.\n\n" + (r.stderr or r.stdout).strip()[-400:])
+            self.refresh()
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_restart(self, *_):
+        if self.confirm("Restart now?", "Save your work first — the laptop restarts to switch graphics mode.",
+                        "Restart"):
+            run("systemctl", "reboot")
+
+    def on_calibration(self, *_):
+        if calibration_running():
+            calibration_stop()
+            notify("Battery calibration stopped", "Low-battery sleep/hibernate restored.")
+        else:
+            bat = battery_info()
+            if bat and bat["percent"] < 99 and not self.confirm(
+                    "Battery isn't full", f"It's at {bat['percent']}%. For a proper calibration charge to 100% "
+                    "first. Start anyway?", "Start anyway"):
+                return
+            options = ["critical"] + [k for k in ("idle", "lid", "screen") if self.opt[k].get_active()]
+            err = calibration_start(options, self.opt["fast"].get_active())
+            if err:
+                self.error(err)
+            else:
+                notify("Battery calibration started", "Unplug the charger and let the laptop run until it "
+                       "powers off.", "battery-caution")
+        self.refresh()
+
+
+if __name__ == "__main__":
+    win = PowerMode()
+    win.connect("destroy", Gtk.main_quit)
+    Gtk.main()
