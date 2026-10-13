@@ -2,8 +2,9 @@
 # Remove msi-power-linux.  Usage:  sudo ./uninstall.sh
 set -euo pipefail
 [ "$(id -u)" = 0 ] || { echo "Run with sudo: sudo ./uninstall.sh" >&2; exit 1; }
-systemctl disable --now msi-power-auto.service 2>/dev/null || true
+systemctl disable --now msi-power-auto.service msi-fan-autoboost.service 2>/dev/null || true
 rm -f /usr/local/bin/msi-power-auto /usr/local/bin/msi-power-set /usr/local/bin/power-mode \
+      /usr/local/bin/msi-fan-autoboost /etc/systemd/system/msi-fan-autoboost.service /etc/msi-power/autoboost.conf \
       /etc/udev/rules.d/99-msi-power-auto.rules /etc/systemd/system/msi-power-auto.service \
       /usr/lib/systemd/system-sleep/msi-power-auto /etc/sudoers.d/msi-power \
       /usr/share/applications/power-mode.desktop /usr/share/applications/power-mode-automatic.desktop \

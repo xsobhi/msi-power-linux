@@ -5,7 +5,7 @@ MSI Center–style power modes for MSI laptops on Linux, with **automatic switch
 - **On the charger:** MSI *Comfort* (balanced) + Linux `balanced` profile
 - **On battery:** MSI *Eco* + *Super Battery* + Linux `power-saver` profile
 - Plus a small **Power Mode** window (like MSI Center's "User Scenario") for manual presets,
-  **graphics mode** (NVIDIA / Hybrid / Intel, applied after a restart) and **battery calibration**.
+  **graphics mode** (NVIDIA / Hybrid / Intel, applied after a restart), **fans** and **battery calibration**.
 
 It's a thin automation layer on top of the [**msi-ec**](https://github.com/BeardOverflow/msi-ec) kernel driver
 (not included, GPL-2.0, by BeardOverflow and contributors), which exposes the laptop's embedded-controller
@@ -52,6 +52,21 @@ The calibration page shows live charge, power draw and battery health, ticks off
 don't sleep when idle / when the lid is closed (on by default), keep the screen on, and drain faster
 (switches to Extreme Performance; your previous mode comes back afterwards).
 
+## Fans
+
+**Fans…** in Power Mode shows live CPU/GPU temperature and fan RPM and lets you set:
+
+- **Fan mode** — Auto, Silent, or Advanced (the custom curve stored in the EC by MSI Center on Windows; without
+  one it acts like Auto)
+- **Cooler Boost** — fans at maximum
+- **Auto Cooler Boost** — `msi-fan-autoboost.service` turns Cooler Boost on when the CPU or GPU reaches a
+  temperature you pick (default 90 °C) and off again below another (default 80 °C). It only switches off a boost
+  it turned on itself, so a manual boost or *Extreme + Cooler Boost* is left alone. Off by default.
+
+Picking a preset (or a charger switch in Automatic) sets fan mode and Cooler Boost back to the preset's values.
+Custom fan curves aren't offered: msi-ec has no curve interface for these firmwares, and with Secure Boot the
+kernel blocks raw EC writes anyway.
+
 ## Graphics mode
 
 The three buttons under the presets switch the PRIME GPU mode with `prime-select` (needs `nvidia-prime`):
@@ -83,7 +98,8 @@ Then open **Power Mode** from the app menu (or run `power-mode`). To put it on t
 `cp /usr/share/applications/power-mode*.desktop ~/Desktop/` and mark them trusted.
 
 Command line: `sudo msi-power-set extreme|extremeboost|balanced|silent|superbattery|auto`
-(`gpu nvidia|on-demand|intel` switches the GPU mode; `calibrate` / `calibrate-off` only stop/start UPower — use the window for calibration, it also handles the Cinnamon settings)
+(`gpu nvidia|on-demand|intel` switches the GPU mode; `fan auto|silent|advanced`, `boost on|off` and
+`autoboost ON OFF|off` control the fans; `calibrate` / `calibrate-off` only stop/start UPower — use the window for calibration, it also handles the Cinnamon settings)
 
 ## How it works
 
@@ -95,6 +111,7 @@ Command line: `sudo msi-power-set extreme|extremeboost|balanced|silent|superbatt
 | `/etc/xdg/autostart/battery-calibration-restore.desktop` | at login, restores low-battery settings after a calibration run |
 | `/etc/udev/rules.d/99-msi-power-auto.rules` | re-applies on charger plug/unplug (any `Mains` power supply) and notifies logged-in desktop sessions |
 | `msi-power-auto.service` | applies at boot |
+| `msi-fan-autoboost.service` + `/usr/local/bin/msi-fan-autoboost` | *optional* Auto Cooler Boost (settings in `/etc/msi-power/autoboost.conf`) |
 | `/usr/lib/systemd/system-sleep/msi-power-auto` | re-applies after resume |
 | `/etc/sudoers.d/msi-power` | lets *your* user run `msi-power-set` (and nothing else) without a password |
 | `/etc/polkit-1/rules.d/60-lid-close-always-suspend.rules` | *optional* (`--lid-rule`): closing the lid always suspends, even if a background process holds a sleep inhibitor |

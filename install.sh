@@ -15,9 +15,9 @@ command -v powerprofilesctl >/dev/null || echo "WARNING: powerprofilesctl not fo
 python3 -c "import gi; gi.require_version('Gtk', '3.0')" 2>/dev/null || echo "WARNING: GTK 3 for Python not found - install python3-gi and gir1.2-gtk-3.0 for the Power Mode window."
 command -v prime-select >/dev/null || echo "NOTE: prime-select not found - the Graphics (NVIDIA/Hybrid/Intel) buttons need nvidia-prime."
 
-install -m 755 bin/msi-power-auto bin/msi-power-set bin/power-mode /usr/local/bin/
+install -m 755 bin/msi-power-auto bin/msi-power-set bin/power-mode bin/msi-fan-autoboost /usr/local/bin/
 install -m 644 udev/99-msi-power-auto.rules /etc/udev/rules.d/
-install -m 644 systemd/msi-power-auto.service /etc/systemd/system/
+install -m 644 systemd/msi-power-auto.service systemd/msi-fan-autoboost.service /etc/systemd/system/
 install -m 755 systemd/system-sleep/msi-power-auto /usr/lib/systemd/system-sleep/msi-power-auto
 install -m 644 desktop/power-mode.desktop desktop/power-mode-automatic.desktop /usr/share/applications/
 # Restores low-battery actions at login after a battery calibration run ended with the battery dying

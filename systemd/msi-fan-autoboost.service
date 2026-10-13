@@ -1,0 +1,10 @@
+[Unit]
+Description=Auto Cooler Boost for MSI laptops (msi-ec)
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/local/bin/msi-fan-autoboost
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

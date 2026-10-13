@@ -1,0 +1,34 @@
+#!/bin/sh
+# Auto Cooler Boost: max fans while the CPU or GPU is hot, back to normal once it has cooled down.
+# Settings: /etc/msi-power/autoboost.conf (ON= / OFF= in °C), written by `msi-power-set autoboost`.
+# Only turns off a Cooler Boost it turned on itself, so a manual boost / Extreme + Cooler Boost is left alone.
+EC=/sys/devices/platform/msi-ec
+STATE=/run/msi-fan-autoboost   # exists while we are the ones holding Cooler Boost on
+ON=90; OFF=80
+[ -f /etc/msi-power/autoboost.conf ] && . /etc/msi-power/autoboost.conf
+
+release() {
+    [ -f "$STATE" ] && [ "$(cat "$EC/cooler_boost")" = on ] && echo off > "$EC/cooler_boost"
+    rm -f "$STATE"
+    exit 0
+}
+trap release TERM INT
+
+while :; do
+    cpu=$(cat "$EC/cpu/realtime_temperature" 2>/dev/null || echo 0)
+    gpu=$(cat "$EC/gpu/realtime_temperature" 2>/dev/null || echo 0)
+    t=$(( cpu > gpu ? cpu : gpu ))
+    boost=$(cat "$EC/cooler_boost" 2>/dev/null)
+    if [ -f "$STATE" ]; then
+        if [ "$boost" != on ]; then
+            rm -f "$STATE"                       # a preset switched it off; we may turn it on again
+        elif [ "$t" -le "$OFF" ]; then
+            echo off > "$EC/cooler_boost"; rm -f "$STATE"
+            logger -t msi-fan-autoboost "cooled to ${t}°C, Cooler Boost off"
+        fi
+    elif [ "$boost" = off ] && [ "$t" -ge "$ON" ]; then
+        echo on > "$EC/cooler_boost"; touch "$STATE"
+        logger -t msi-fan-autoboost "${t}°C, Cooler Boost on"
+    fi
+    sleep 3 & wait $!
+done

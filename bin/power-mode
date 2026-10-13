@@ -25,6 +25,13 @@ PRESETS = [
     ("superbattery", "Super Battery", "Maximum battery life, CPU heavily limited"),
     ("auto", "Automatic", "Balanced on charger, Super Battery on battery"),
 ]
+FAN_MODES = [
+    ("auto", "Auto", "The laptop's normal fan curve."),
+    ("silent", "Silent", "Quieter, lower fan speeds — the CPU/GPU run hotter and may throttle sooner."),
+    ("advanced", "Advanced", "Uses the custom fan curve stored in the laptop (set from MSI Center on Windows); "
+                             "without one it behaves like Auto."),
+]
+AUTOBOOST_CONF = "/etc/msi-power/autoboost.conf"
 GPU_MODES = [
     ("nvidia", "NVIDIA", "Everything on the NVIDIA GPU — best for gaming, uses more battery"),
     ("on-demand", "Hybrid", "Intel by default, NVIDIA for apps that ask for it"),
@@ -158,6 +165,14 @@ def battery_info():
     return None
 
 
+def fan_rpms():
+    """[cpu, gpu] fan RPM from the msi_wmi_platform hwmon sensor, if present."""
+    for h in sorted(os.listdir("/sys/class/hwmon")):
+        if read(f"/sys/class/hwmon/{h}/name") == "msi_wmi_platform":
+            return [read(f"/sys/class/hwmon/{h}/fan{i}_input", "0") for i in (1, 2)]
+    return []
+
+
 def ac_online():
     for name in os.listdir("/sys/class/power_supply"):
         p = f"/sys/class/power_supply/{name}"
@@ -216,6 +231,7 @@ class PowerMode(Gtk.Window):
                                vhomogeneous=False, interpolate_size=True)
         self.stack.add_named(self.build_main(), "main")
         self.stack.add_named(self.build_calibration(), "calib")
+        self.stack.add_named(self.build_fans(), "fans")
         self.add(self.stack)
         self.busy = False
         self.show_all()
@@ -290,15 +306,80 @@ class PowerMode(Gtk.Window):
         box.pack_start(gpu_info, False, False, 0)
 
         box.pack_start(Gtk.Separator(margin_top=6), False, False, 0)
-        calib = Gtk.Button()
-        cbox = Gtk.Box(spacing=8)
-        cbox.pack_start(Gtk.Image.new_from_icon_name("battery-good-symbolic", Gtk.IconSize.BUTTON), False, False, 0)
-        cbox.pack_start(self.label("Battery calibration…"), True, True, 0)
-        cbox.pack_end(Gtk.Image.new_from_icon_name("go-next-symbolic", Gtk.IconSize.BUTTON), False, False, 0)
-        calib.add(cbox)
-        calib.connect("clicked", lambda *_: self.show_page("calib"))
-        box.pack_start(calib, False, False, 0)
+        box.pack_start(self.nav_button("weather-windy-symbolic", "Fans…", "fans"), False, False, 0)
+        box.pack_start(self.nav_button("battery-good-symbolic", "Battery calibration…", "calib"), False, False, 0)
         return box
+
+    def nav_button(self, icon, text, page):
+        button = Gtk.Button()
+        row = Gtk.Box(spacing=8)
+        row.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.BUTTON), False, False, 0)
+        row.pack_start(self.label(text), True, True, 0)
+        row.pack_end(Gtk.Image.new_from_icon_name("go-next-symbolic", Gtk.IconSize.BUTTON), False, False, 0)
+        button.add(row)
+        button.connect("clicked", lambda *_: self.show_page(page))
+        return button
+
+    # ----- fans page -----
+    def build_fans(self):
+        box = self.page()
+        live = Gtk.Grid(column_spacing=24, row_spacing=2)
+        self.fan_live = {}
+        for col, (key, name) in enumerate((("cpu", "CPU"), ("gpu", "GPU"))):
+            live.attach(self.label(f"<b>{name}</b>"), col, 0, 1, 1)
+            temp, rpm = self.label("", "big"), self.label("", "dim")
+            live.attach(temp, col, 1, 1, 1)
+            live.attach(rpm, col, 2, 1, 1)
+            self.fan_live[key] = (temp, rpm)
+        box.pack_start(live, False, False, 0)
+
+        box.pack_start(self.label("Fan mode", "section"), False, False, 0)
+        row = Gtk.Box(homogeneous=True)
+        row.get_style_context().add_class("linked")
+        self.fan_buttons = {}
+        for fid, name, desc in FAN_MODES:
+            tb = Gtk.ToggleButton(label=name, tooltip_text=desc)
+            tb.connect("toggled", self.on_fan_mode, fid)
+            self.fan_buttons[fid] = tb
+            row.pack_start(tb, True, True, 0)
+        box.pack_start(row, False, False, 0)
+        self.fan_desc = self.label("", "dim", wrap=True)
+        box.pack_start(self.fan_desc, False, False, 0)
+
+        box.pack_start(self.label("Cooler Boost", "section"), False, False, 0)
+        self.boost_switch = self.switch_row(box, "Fans at maximum", "Loud, but keeps clocks up under long loads.")
+        self.boost_switch.connect("notify::active", self.on_boost)
+
+        self.autoboost_switch = self.switch_row(box, "Auto Cooler Boost",
+                                                "Turns Cooler Boost on when the CPU or GPU gets hot and off "
+                                                "again once it has cooled down.")
+        self.autoboost_switch.connect("notify::active", self.on_autoboost)
+        temps = Gtk.Box(spacing=8, margin_start=12)
+        self.boost_on = Gtk.SpinButton.new_with_range(60, 100, 1)
+        self.boost_off = Gtk.SpinButton.new_with_range(40, 99, 1)
+        for w in (self.label("On at"), self.boost_on, self.label("°C,  off below"), self.boost_off, self.label("°C")):
+            temps.pack_start(w, False, False, 0)
+        self.autoboost_apply = Gtk.Button(label="Apply")
+        self.autoboost_apply.connect("clicked", lambda *_: self.on_autoboost(self.autoboost_switch, None))
+        temps.pack_end(self.autoboost_apply, False, False, 0)
+        box.pack_start(temps, False, False, 0)
+
+        box.pack_start(self.label("Picking a power mode (or plugging/unplugging the charger in Automatic) sets the fan "
+                                  "mode and Cooler Boost back to that mode's values. Custom fan curves aren't "
+                                  "available: msi-ec can't write them for this firmware.", "dim", wrap=True),
+                       False, False, 0)
+        return box
+
+    def switch_row(self, box, title, desc):
+        row = Gtk.Box(spacing=12)
+        text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        text.pack_start(self.label(title), False, False, 0)
+        text.pack_start(self.label(desc, "dim", wrap=True), False, False, 0)
+        row.pack_start(text, True, True, 0)
+        sw = Gtk.Switch(valign=Gtk.Align.CENTER)
+        row.pack_end(sw, False, False, 0)
+        box.pack_start(row, False, False, 0)
+        return sw
 
     # ----- calibration page -----
     def build_calibration(self):
@@ -345,7 +426,7 @@ class PowerMode(Gtk.Window):
     def show_page(self, name):
         self.stack.set_visible_child_name(name)
         self.back.set_visible(name != "main")
-        self.header.set_title("Battery Calibration" if name == "calib" else "Power Mode")
+        self.header.set_title({"calib": "Battery Calibration", "fans": "Fans"}.get(name, "Power Mode"))
 
     def tick(self):
         if not self.busy:
@@ -409,7 +490,27 @@ class PowerMode(Gtk.Window):
             l.get_style_context().remove_class("step-done")
             if d:
                 l.get_style_context().add_class("step-done")
+        self.refresh_fans()
         self.updating = False
+
+    def refresh_fans(self):
+        rpm = fan_rpms()
+        for i, key in enumerate(("cpu", "gpu")):
+            temp, label = self.fan_live[key]
+            temp.set_text(f"{read(f'{EC}/{key}/realtime_temperature', '?')} °C")
+            label.set_text(f"Fan {rpm[i]} RPM" if i < len(rpm) else "Fan —")
+        mode = read(EC + "/fan_mode")
+        for fid, tb in self.fan_buttons.items():
+            tb.set_active(fid == mode)
+        self.fan_desc.set_text(next((d for f, _, d in FAN_MODES if f == mode), ""))
+        self.boost_switch.set_active(read(EC + "/cooler_boost") == "on")
+        auto_on = run("systemctl", "is-enabled", "msi-fan-autoboost.service").stdout.strip() == "enabled"
+        self.autoboost_switch.set_active(auto_on)
+        if not self.boost_on.has_focus() and not self.boost_off.has_focus():
+            conf = dict(l.split("=", 1) for l in read(AUTOBOOST_CONF).split() if "=" in l)
+            self.boost_on.set_value(int(conf.get("ON", 90)))
+            self.boost_off.set_value(int(conf.get("OFF", 80)))
+        self.autoboost_apply.set_visible(auto_on)
 
     # ----- actions -----
     def error(self, text):
@@ -462,6 +563,36 @@ class PowerMode(Gtk.Window):
                 self.error("Could not switch graphics mode.\n\n" + (r.stderr or r.stdout).strip()[-400:])
             self.refresh()
         threading.Thread(target=work, daemon=True).start()
+
+    def on_fan_mode(self, tb, fid):
+        if self.updating:
+            return
+        if tb.get_active() and helper("fan", fid).returncode != 0:
+            self.error("Could not change fan mode.")
+        self.refresh()
+
+    def on_boost(self, sw, _):
+        if self.updating:
+            return
+        if helper("boost", "on" if sw.get_active() else "off").returncode != 0:
+            self.error("Could not change Cooler Boost.")
+        self.refresh()
+
+    def on_autoboost(self, sw, _):
+        if self.updating:
+            return
+        if sw.get_active():
+            on, off = self.boost_on.get_value_as_int(), self.boost_off.get_value_as_int()
+            if off >= on:
+                self.error("The \"off below\" temperature has to be lower than the \"on at\" one.")
+                self.refresh()
+                return
+            r = helper("autoboost", str(on), str(off))
+        else:
+            r = helper("autoboost", "off")
+        if r.returncode != 0:
+            self.error("Could not change Auto Cooler Boost.\n\n" + (r.stderr or r.stdout).strip()[-300:])
+        self.refresh()
 
     def on_restart(self, *_):
         if self.confirm("Restart now?", "Save your work first — the laptop restarts to switch graphics mode.",

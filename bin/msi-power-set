@@ -1,5 +1,6 @@
 #!/bin/sh
-# Usage: msi-power-set extreme|extremeboost|balanced|silent|superbattery|auto|calibrate|calibrate-off|gpu MODE
+# Usage: msi-power-set extreme|extremeboost|balanced|silent|superbattery|auto|calibrate|calibrate-off
+#                      gpu nvidia|on-demand|intel | fan auto|silent|advanced | boost on|off | autoboost off|ON OFF
 # Manual presets stick (until reboot or "auto"); "auto" returns to AC/battery switching.
 EC=/sys/devices/platform/msi-ec
 FLAG=/run/msi-power-manual
@@ -26,7 +27,28 @@ case "$1" in
         [ -f /run/gpu-mode-boot ] || prime-select query > /run/gpu-mode-boot
         prime-select "$2" || exit 1
         logger -t msi-power-auto "GPU mode -> $2 (after restart)"; exit 0 ;;
-    *) echo "usage: $0 extreme|extremeboost|balanced|silent|superbattery|auto|calibrate|calibrate-off|gpu MODE" >&2; exit 2 ;;
+    # Fan controls (Fans page). A preset or charger switch resets them to the preset's values.
+    fan)
+        case "$2" in auto|silent|advanced) echo "$2" > "$EC/fan_mode" || exit 1 ;;
+            *) echo "usage: $0 fan auto|silent|advanced" >&2; exit 2 ;; esac
+        logger -t msi-power-auto "fan mode -> $2"; exit 0 ;;
+    boost)
+        case "$2" in on|off) echo "$2" > "$EC/cooler_boost" || exit 1 ;;
+            *) echo "usage: $0 boost on|off" >&2; exit 2 ;; esac
+        logger -t msi-power-auto "cooler boost -> $2"; exit 0 ;;
+    # Auto Cooler Boost: msi-fan-autoboost.service turns boost on at ON °C and off at OFF °C.
+    autoboost)
+        if [ "$2" = off ]; then
+            systemctl disable --now msi-fan-autoboost.service; exit 0
+        fi
+        case "$2:$3" in *[!0-9:]*|:*|*:) echo "usage: $0 autoboost off|ON_TEMP OFF_TEMP" >&2; exit 2 ;; esac
+        [ "$2" -ge 60 ] && [ "$2" -le 100 ] && [ "$3" -ge 40 ] && [ "$3" -lt "$2" ] ||
+            { echo "need 60 <= ON <= 100 and 40 <= OFF < ON" >&2; exit 2; }
+        mkdir -p /etc/msi-power
+        printf 'ON=%s\nOFF=%s\n' "$2" "$3" > /etc/msi-power/autoboost.conf
+        systemctl enable msi-fan-autoboost.service && systemctl restart msi-fan-autoboost.service
+        logger -t msi-power-auto "auto cooler boost on at $2°C, off at $3°C"; exit 0 ;;
+    *) echo "usage: $0 extreme|extremeboost|balanced|silent|superbattery|auto|calibrate|calibrate-off|gpu MODE|fan MODE|boost on|off|autoboost ..." >&2; exit 2 ;;
 esac
 [ -d "$EC" ] || { echo "msi-ec driver not loaded" >&2; exit 1; }
 echo "$shift" > "$EC/shift_mode"
